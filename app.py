@@ -1,4 +1,4 @@
-"""고객은 왜 이탈하는가 — 이탈 원인 진단 대시보드"""
+"""고객은 왜 이탈하는가 — 이탈 원인 진단 대시보드 강의용"""
 import os
 
 import pandas as pd
@@ -6,6 +6,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from dateutil.relativedelta import relativedelta
+from google.cloud import bigquery
+from google.oauth2 import service_account
 from plotly.subplots import make_subplots
 
 st.set_page_config(page_title="고객은 왜 이탈하는가", layout="wide")
@@ -14,12 +16,19 @@ st.set_page_config(page_title="고객은 왜 이탈하는가", layout="wide")
 COLOR_NEUTRAL = "#898781"
 COLOR_CRITICAL = "#d03b3b"
 COLOR_ACTIVE = "#0ca30c"
+COLOR_GOOD = "#0ca30c"
 COLOR_BAR = "#2a78d6"
 COLOR_LINE = "#e34948"
 COLOR_GRID = "#e1e0d9"
+COLOR_HIGHLIGHT = "#2a78d6"
+COLOR_NEGATIVE_ZONE = "#f6d9d6"
+COLOR_POSITIVE_ZONE = "#e1e0d9"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+
+BQ_PROJECT = "sql-study-493001"
+BQ_DATASET = "project1_day1"
 
 CHART_LAYOUT = dict(
     plot_bgcolor="#fcfcfb",
@@ -39,6 +48,150 @@ def load_data():
 
 
 customers, voc, consultations, satisfaction, usage = load_data()
+
+
+def get_bigquery_client():
+    """Streamlit Cloud에서는 st.secrets의 서비스 계정으로, 로컬에서는 ADC로 인증한다."""
+    try:
+        has_secret = "gcp_service_account" in st.secrets
+    except Exception:
+        has_secret = False  # secrets.toml 자체가 없는 로컬 환경
+
+    if has_secret:
+        credentials = service_account.Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"])
+        )
+        return bigquery.Client(project=BQ_PROJECT, credentials=credentials)
+    return bigquery.Client(project=BQ_PROJECT)
+
+
+@st.cache_data
+def load_bigquery_agent_data():
+    """BigQuery agents/consultations/satisfaction을 조인해 상담원 단위·상담 단위 데이터를 가져온다."""
+    client = get_bigquery_client()
+
+    agent_query = f"""
+    WITH agent_csat AS (
+      SELECT c.agent_id, AVG(s.csat) AS avg_csat
+      FROM `{BQ_PROJECT}.{BQ_DATASET}.consultations` c
+      JOIN `{BQ_PROJECT}.{BQ_DATASET}.satisfaction` s ON c.consult_id = s.consult_id
+      WHERE c.agent_id IS NOT NULL
+      GROUP BY c.agent_id
+    )
+    SELECT
+      a.agent_id,
+      a.team,
+      a.overtime_hours_avg,
+      a.agent_satisfaction,
+      ac.avg_csat
+    FROM `{BQ_PROJECT}.{BQ_DATASET}.agents` a
+    JOIN agent_csat ac ON a.agent_id = ac.agent_id
+    """
+
+    consult_query = f"""
+    SELECT
+      c.agent_id,
+      a.team,
+      a.training_completed_yn,
+      c.is_recontact,
+      s.csat
+    FROM `{BQ_PROJECT}.{BQ_DATASET}.consultations` c
+    JOIN `{BQ_PROJECT}.{BQ_DATASET}.satisfaction` s ON c.consult_id = s.consult_id
+    JOIN `{BQ_PROJECT}.{BQ_DATASET}.agents` a ON c.agent_id = a.agent_id
+    """
+
+    agent_df = client.query(agent_query).result().to_dataframe()
+    consult_df = client.query(consult_query).result().to_dataframe()
+    return agent_df, consult_df
+
+
+def compute_enps(satisfaction_scores):
+    promoters = (satisfaction_scores >= 9).sum()
+    detractors = (satisfaction_scores <= 6).sum()
+    return (promoters - detractors) * 100.0 / len(satisfaction_scores)
+
+
+def build_enps_gauge(agent_df, title):
+    enps = compute_enps(agent_df["agent_satisfaction"])
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=enps,
+            title={"text": title, "font": {"size": 18}},
+            number={"font": {"size": 36, "color": COLOR_CRITICAL if enps < 0 else COLOR_GOOD}},
+            gauge={
+                "axis": {"range": [-100, 100]},
+                "bar": {"color": COLOR_CRITICAL if enps < 0 else COLOR_GOOD},
+                "steps": [
+                    {"range": [-100, 0], "color": COLOR_NEGATIVE_ZONE},
+                    {"range": [0, 100], "color": COLOR_POSITIVE_ZONE},
+                ],
+                "threshold": {"line": {"color": "#52514e", "width": 2}, "thickness": 0.8, "value": 0},
+            },
+        )
+    )
+    fig.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), **CHART_LAYOUT)
+    return fig
+
+
+def build_burnout_csat_chart(agent_df, title):
+    fig = px.scatter(
+        agent_df,
+        x="overtime_hours_avg",
+        y="avg_csat",
+        trendline="ols" if agent_df["overtime_hours_avg"].nunique() >= 2 else None,
+        custom_data=["agent_id", "overtime_hours_avg", "avg_csat"],
+        title=title,
+        labels={"overtime_hours_avg": "초과근무 시간 (평균, 시간)", "avg_csat": "CSAT 평균"},
+    )
+    fig.update_traces(
+        selector=dict(mode="markers"),
+        marker=dict(size=10, color=COLOR_HIGHLIGHT, opacity=0.85),
+        hovertemplate=(
+            "<b>%{customdata[0]}</b><br>초과근무: %{customdata[1]}시간<br>CSAT 평균: %{customdata[2]:.2f}<extra></extra>"
+        ),
+    )
+    fig.update_traces(selector=dict(mode="lines"), line=dict(color=COLOR_CRITICAL, width=2))
+    if agent_df["overtime_hours_avg"].nunique() >= 2 and agent_df["overtime_hours_avg"].std() > 0:
+        r = agent_df["overtime_hours_avg"].corr(agent_df["avg_csat"])
+        fig.add_annotation(
+            xref="paper", yref="paper", x=0.98, y=0.98,
+            text=f"r = {r:.2f}", showarrow=False, font=dict(size=14),
+        )
+    fig.update_layout(xaxis=dict(gridcolor=COLOR_GRID), yaxis=dict(gridcolor=COLOR_GRID), **CHART_LAYOUT)
+    return fig
+
+
+def build_training_compare_chart(consult_df, title):
+    summary = (
+        consult_df.groupby("training_completed_yn")
+        .agg(n=("csat", "count"), avg_csat=("csat", "mean"), recontact_rate=("is_recontact", "mean"))
+        .reset_index()
+    )
+    summary["recontact_rate"] *= 100
+    summary["label"] = summary["training_completed_yn"].map({True: "Y (이수)", False: "N (미이수)"})
+    summary = summary.sort_values("training_completed_yn", ascending=False)
+    bar_colors = summary["label"].map({"Y (이수)": COLOR_HIGHLIGHT, "N (미이수)": COLOR_NEUTRAL})
+
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("CSAT 평균", "재문의율 평균 (%)"))
+    fig.add_trace(
+        go.Bar(
+            x=summary["label"], y=summary["avg_csat"], marker_color=bar_colors,
+            text=summary["avg_csat"].map(lambda v: f"{v:.2f}"), textposition="outside", showlegend=False,
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            x=summary["label"], y=summary["recontact_rate"], marker_color=bar_colors,
+            text=summary["recontact_rate"].map(lambda v: f"{v:.1f}%"), textposition="outside", showlegend=False,
+        ),
+        row=1, col=2,
+    )
+    fig.update_yaxes(range=[0, summary["avg_csat"].max() * 1.3], gridcolor=COLOR_GRID, row=1, col=1)
+    fig.update_yaxes(range=[0, summary["recontact_rate"].max() * 1.3], gridcolor=COLOR_GRID, row=1, col=2)
+    fig.update_layout(title=title, **CHART_LAYOUT)
+    return fig
 
 
 # ── ① VOC로 본 이탈 ──────────────────────────────────────────────
@@ -381,3 +534,35 @@ st.plotly_chart(build_region_chart(customers), width="stretch")
 
 st.subheader("⑥ 가입기간·이용량으로 본 이탈")
 st.plotly_chart(build_tenure_usage_chart(customers, usage), width="stretch")
+
+
+# ── 상담원 관점: 직원만족도와 고객 경험 ────────────────────────────
+st.divider()
+st.subheader("상담원 관점: 직원만족도와 고객 경험")
+
+agent_df, consult_df = load_bigquery_agent_data()
+team_options = ["전체"] + sorted(agent_df["team"].unique())
+selected_team = st.selectbox("팀 선택", team_options)
+
+# selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
+# 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
+if selected_team == "전체":
+    filtered_agents = agent_df
+    filtered_consults = consult_df
+else:
+    filtered_agents = agent_df[agent_df["team"] == selected_team]
+    filtered_consults = consult_df[consult_df["team"] == selected_team]
+
+st.caption(f"선택: {selected_team}  ·  상담원 {len(filtered_agents)}명  ·  상담 {len(filtered_consults):,}건")
+
+gauge_col, scatter_col = st.columns([1, 2])
+with gauge_col:
+    st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
+with scatter_col:
+    st.plotly_chart(
+        build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
+    )
+
+st.plotly_chart(
+    build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
+)
