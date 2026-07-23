@@ -30,6 +30,10 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 BQ_PROJECT = "sql-study-493001"
 BQ_DATASET = "project1_day1"
 
+SNAPSHOT_DATE = "2026-07-24"
+AGENT_SNAPSHOT_PATH = os.path.join(DATA_DIR, "agents_snapshot.csv")
+CONSULT_SNAPSHOT_PATH = os.path.join(DATA_DIR, "agent_consultations_snapshot.csv")
+
 CHART_LAYOUT = dict(
     plot_bgcolor="#fcfcfb",
     paper_bgcolor="#fcfcfb",
@@ -103,6 +107,27 @@ def load_bigquery_agent_data():
     agent_df = client.query(agent_query).result().to_dataframe()
     consult_df = client.query(consult_query).result().to_dataframe()
     return agent_df, consult_df
+
+
+@st.cache_data
+def load_agent_snapshot():
+    """BigQuery에 연결할 수 없을 때 쓸 로컬 스냅샷(data/*_snapshot.csv)을 읽는다.
+    스냅샷은 SNAPSHOT_DATE 시점에 load_bigquery_agent_data()와 동일한 쿼리로 미리 내려받아 둔 것이라
+    실시간 데이터가 아니다."""
+    agent_df = pd.read_csv(AGENT_SNAPSHOT_PATH)
+    consult_df = pd.read_csv(CONSULT_SNAPSHOT_PATH)
+    return agent_df, consult_df
+
+
+def load_agent_data_with_fallback():
+    """BigQuery 라이브 조회를 우선 시도하고, 인증/네트워크 문제로 실패하면 로컬 스냅샷으로 대체한다.
+    (agent_df, consult_df, is_live) 튜플을 반환한다."""
+    try:
+        agent_df, consult_df = load_bigquery_agent_data()
+        return agent_df, consult_df, True
+    except Exception:
+        agent_df, consult_df = load_agent_snapshot()
+        return agent_df, consult_df, False
 
 
 def compute_enps(satisfaction_scores):
@@ -540,40 +565,38 @@ st.plotly_chart(build_tenure_usage_chart(customers, usage), width="stretch")
 st.divider()
 st.subheader("상담원 관점: 직원만족도와 고객 경험")
 
-try:
-    agent_df, consult_df = load_bigquery_agent_data()
-except Exception:
-    agent_df, consult_df = None, None
+agent_df, consult_df, is_live = load_agent_data_with_fallback()
 
-if agent_df is None:
-    st.info(
-        "이 섹션은 BigQuery 인증 정보가 있는 환경에서만 표시됩니다. "
-        "현재 배포 환경에는 서비스 계정 키가 등록되어 있지 않아(조직 정책으로 발급이 제한됨) "
-        "이 섹션을 건너뜁니다 — 로컬에서 실행하면 정상적으로 표시됩니다."
-    )
+if is_live:
+    st.caption("🟢 BigQuery 라이브 데이터")
 else:
-    team_options = ["전체"] + sorted(agent_df["team"].unique())
-    selected_team = st.selectbox("팀 선택", team_options)
-
-    # selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
-    # 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
-    if selected_team == "전체":
-        filtered_agents = agent_df
-        filtered_consults = consult_df
-    else:
-        filtered_agents = agent_df[agent_df["team"] == selected_team]
-        filtered_consults = consult_df[consult_df["team"] == selected_team]
-
-    st.caption(f"선택: {selected_team}  ·  상담원 {len(filtered_agents)}명  ·  상담 {len(filtered_consults):,}건")
-
-    gauge_col, scatter_col = st.columns([1, 2])
-    with gauge_col:
-        st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
-    with scatter_col:
-        st.plotly_chart(
-            build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
-        )
-
-    st.plotly_chart(
-        build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
+    st.caption(
+        f"🟡 로컬 스냅샷 데이터 ({SNAPSHOT_DATE} 기준) — 배포 환경에 BigQuery 인증 정보가 없어 "
+        "그 시점에 미리 내려받아 둔 데이터로 대체 표시 중입니다. 최신 값이 아닐 수 있습니다."
     )
+
+team_options = ["전체"] + sorted(agent_df["team"].unique())
+selected_team = st.selectbox("팀 선택", team_options)
+
+# selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
+# 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
+if selected_team == "전체":
+    filtered_agents = agent_df
+    filtered_consults = consult_df
+else:
+    filtered_agents = agent_df[agent_df["team"] == selected_team]
+    filtered_consults = consult_df[consult_df["team"] == selected_team]
+
+st.caption(f"선택: {selected_team}  ·  상담원 {len(filtered_agents)}명  ·  상담 {len(filtered_consults):,}건")
+
+gauge_col, scatter_col = st.columns([1, 2])
+with gauge_col:
+    st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
+with scatter_col:
+    st.plotly_chart(
+        build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
+    )
+
+st.plotly_chart(
+    build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
+)
