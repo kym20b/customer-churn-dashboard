@@ -5,3 +5,4 @@ python-dateutil==2.9.0.post0
 matplotlib==3.8.4
 google-cloud-bigquery==3.41.0
 db-dtypes==1.7.0
+statsmodels==0.14.6
