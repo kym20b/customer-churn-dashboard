@@ -540,29 +540,40 @@ st.plotly_chart(build_tenure_usage_chart(customers, usage), width="stretch")
 st.divider()
 st.subheader("상담원 관점: 직원만족도와 고객 경험")
 
-agent_df, consult_df = load_bigquery_agent_data()
-team_options = ["전체"] + sorted(agent_df["team"].unique())
-selected_team = st.selectbox("팀 선택", team_options)
+try:
+    agent_df, consult_df = load_bigquery_agent_data()
+except Exception:
+    agent_df, consult_df = None, None
 
-# selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
-# 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
-if selected_team == "전체":
-    filtered_agents = agent_df
-    filtered_consults = consult_df
-else:
-    filtered_agents = agent_df[agent_df["team"] == selected_team]
-    filtered_consults = consult_df[consult_df["team"] == selected_team]
-
-st.caption(f"선택: {selected_team}  ·  상담원 {len(filtered_agents)}명  ·  상담 {len(filtered_consults):,}건")
-
-gauge_col, scatter_col = st.columns([1, 2])
-with gauge_col:
-    st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
-with scatter_col:
-    st.plotly_chart(
-        build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
+if agent_df is None:
+    st.info(
+        "이 섹션은 BigQuery 인증 정보가 있는 환경에서만 표시됩니다. "
+        "현재 배포 환경에는 서비스 계정 키가 등록되어 있지 않아(조직 정책으로 발급이 제한됨) "
+        "이 섹션을 건너뜁니다 — 로컬에서 실행하면 정상적으로 표시됩니다."
     )
+else:
+    team_options = ["전체"] + sorted(agent_df["team"].unique())
+    selected_team = st.selectbox("팀 선택", team_options)
 
-st.plotly_chart(
-    build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
-)
+    # selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
+    # 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
+    if selected_team == "전체":
+        filtered_agents = agent_df
+        filtered_consults = consult_df
+    else:
+        filtered_agents = agent_df[agent_df["team"] == selected_team]
+        filtered_consults = consult_df[consult_df["team"] == selected_team]
+
+    st.caption(f"선택: {selected_team}  ·  상담원 {len(filtered_agents)}명  ·  상담 {len(filtered_consults):,}건")
+
+    gauge_col, scatter_col = st.columns([1, 2])
+    with gauge_col:
+        st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
+    with scatter_col:
+        st.plotly_chart(
+            build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
+        )
+
+    st.plotly_chart(
+        build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
+    )
