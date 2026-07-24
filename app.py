@@ -54,6 +54,30 @@ def load_data():
 customers, voc, consultations, satisfaction, usage = load_data()
 
 
+def has_bigquery_credentials() -> bool:
+    """BigQuery 인증 정보가 있을 가능성이 있는지 빠르게(네트워크 호출 없이) 확인한다.
+    st.secrets에 서비스 계정이 없고 로컬 ADC 파일도 없으면, google-auth의 다단계
+    자격증명 탐색(특히 GCE 메타데이터 서버 타임아웃)을 굳이 기다리지 않고 바로
+    스냅샷으로 넘어가기 위한 사전 체크다."""
+    try:
+        if "gcp_service_account" in st.secrets:
+            return True
+    except Exception:
+        pass  # secrets.toml 자체가 없는 로컬 환경
+
+    env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
+    if env_path and os.path.isfile(env_path):
+        return True
+
+    default_adc_path = os.path.join(
+        os.environ.get("APPDATA", os.path.expanduser("~")), "gcloud", "application_default_credentials.json"
+    )
+    if os.path.isfile(default_adc_path):
+        return True
+    posix_adc_path = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
+    return os.path.isfile(posix_adc_path)
+
+
 def get_bigquery_client():
     """Streamlit Cloud에서는 st.secrets의 서비스 계정으로, 로컬에서는 ADC로 인증한다."""
     try:
@@ -120,8 +144,14 @@ def load_agent_snapshot():
 
 
 def load_agent_data_with_fallback():
-    """BigQuery 라이브 조회를 우선 시도하고, 인증/네트워크 문제로 실패하면 로컬 스냅샷으로 대체한다.
-    (agent_df, consult_df, is_live) 튜플을 반환한다."""
+    """인증 정보가 있을 때만 BigQuery 라이브 조회를 시도하고, 없거나 실패하면 로컬 스냅샷으로 대체한다.
+    (agent_df, consult_df, is_live) 튜플을 반환한다.
+    인증 정보가 아예 없는 게 확인되면 라이브 시도 자체를 건너뛰어, google-auth가 GCE
+    메타데이터 서버 응답을 기다리며 매번 몇 초씩 지연되는 것을 방지한다."""
+    if not has_bigquery_credentials():
+        agent_df, consult_df = load_agent_snapshot()
+        return agent_df, consult_df, False
+
     try:
         agent_df, consult_df = load_bigquery_agent_data()
         return agent_df, consult_df, True
