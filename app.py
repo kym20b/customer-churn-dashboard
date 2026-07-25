@@ -116,7 +116,7 @@ def dashboard_page():
     with col2:
         c.render_stat_tile("이탈 고객 수", f"{churned_customers:,}", status="critical")
     with col3:
-        c.render_stat_tile("전체 이탈율", f"{churn_rate:.1f}%", status="critical")
+        c.render_stat_tile("전체 이탈률", f"{churn_rate:.1f}%", status="critical")
 
     st.write("")
     st.subheader("① VOC로 본 이탈률")

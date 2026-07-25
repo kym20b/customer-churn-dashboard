@@ -1,4 +1,4 @@
-"""고객별 재문의 횟수 구간(0회/1회/2회 이상)에 따른 이탈율 비교"""
+"""고객별 재문의 횟수 구간(0회/1회/2회 이상)에 따른 이탈률 비교"""
 import os
 
 import pandas as pd
@@ -63,8 +63,8 @@ fig = px.bar(
     },
     text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
     custom_data=["total_customers", "churned_customers"],
-    title="재문의 횟수 구간별 이탈율",
-    labels={"recontact_bucket": "재문의 횟수", "churn_rate": "이탈율 (%)"},
+    title="재문의 횟수 구간별 이탈률",
+    labels={"recontact_bucket": "재문의 횟수", "churn_rate": "이탈률 (%)"},
     category_orders={"recontact_bucket": bucket_order},
 )
 
@@ -74,7 +74,7 @@ fig.update_traces(
         "<b>%{x}</b><br>"
         "고객 수: %{customdata[0]:,}명<br>"
         "이탈 고객 수: %{customdata[1]:,}명<br>"
-        "이탈율: %{y:.2f}%"
+        "이탈률: %{y:.2f}%"
         "<extra></extra>"
     ),
 )
@@ -83,7 +83,7 @@ fig.add_hline(
     y=overall_rate,
     line_dash="dash",
     line_color="#52514e",
-    annotation_text=f"전체 평균 이탈율 {overall_rate:.1f}%",
+    annotation_text=f"전체 평균 이탈률 {overall_rate:.1f}%",
     annotation_position="top right",
 )
 
@@ -96,6 +96,6 @@ fig.update_layout(
 )
 
 print(summary.to_string(index=False))
-print(f"전체 평균 이탈율: {overall_rate:.2f}%")
+print(f"전체 평균 이탈률: {overall_rate:.2f}%")
 
 fig.show()

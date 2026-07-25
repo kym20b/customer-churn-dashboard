@@ -1,4 +1,4 @@
-"""전체 고객 이탈율 vs 해지관련 부정 VOC 이력 고객 이탈율 비교 막대그래프"""
+"""전체 고객 이탈률 vs 해지관련 부정 VOC 이력 고객 이탈률 비교 막대그래프"""
 import os
 
 import matplotlib.pyplot as plt
@@ -56,8 +56,8 @@ for bar, rate in zip(bars, rates):
 
 ax.set_xticks(list(x))
 ax.set_xticklabels(labels, fontsize=12, color=COLOR_TEXT_PRIMARY)
-ax.set_ylabel("이탈율 (%)", fontsize=11, color=COLOR_TEXT_SECONDARY)
-ax.set_title("전체 고객 vs 해지관련 부정 VOC 이력 고객 이탈율 비교", fontsize=14, pad=16, color=COLOR_TEXT_PRIMARY)
+ax.set_ylabel("이탈률 (%)", fontsize=11, color=COLOR_TEXT_SECONDARY)
+ax.set_title("전체 고객 vs 해지관련 부정 VOC 이력 고객 이탈률 비교", fontsize=14, pad=16, color=COLOR_TEXT_PRIMARY)
 
 ax.set_ylim(0, max(rates) * 1.25)
 ax.yaxis.grid(True, color=COLOR_GRID, linewidth=1, zorder=0)
@@ -76,6 +76,6 @@ output_path = os.path.join(OUTPUT_DIR, "01_matplotlib_voc이탈비교.png")
 plt.savefig(output_path, dpi=150)
 plt.close()
 
-print(f"전체 고객 이탈율: {overall_rate:.2f}%")
-print(f"해지관련 부정 VOC 이력 고객 이탈율: {target_rate:.2f}%")
+print(f"전체 고객 이탈률: {overall_rate:.2f}%")
+print(f"해지관련 부정 VOC 이력 고객 이탈률: {target_rate:.2f}%")
 print(f"저장 완료: {output_path}")

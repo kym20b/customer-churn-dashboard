@@ -506,14 +506,14 @@ def build_voc_chart(customers, voc):
         },
         text=df["churn_rate"].map(lambda v: f"{v:.1f}%"),
         custom_data=["total_customers", "churned_customers", "churn_rate"],
-        title="전체 고객 vs 해지관련 부정 VOC 이력 고객 이탈율 비교",
-        labels={"category": "", "churn_rate": "이탈율 (%)"},
+        title="전체 고객 vs 해지관련 부정 VOC 이력 고객 이탈률 비교",
+        labels={"category": "", "churn_rate": "이탈률 (%)"},
     )
     fig.update_traces(
         textposition="outside",
         hovertemplate=(
             "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{customdata[2]:.2f}%<extra></extra>"
+            "이탈 고객 수: %{customdata[1]:,}명<br>이탈률: %{customdata[2]:.2f}%<extra></extra>"
         ),
     )
     fig.update_layout(
@@ -618,22 +618,22 @@ def build_recontact_bucket_chart(consultations, customers):
         color_discrete_map={"0회": COLOR_NEUTRAL, "1회": COLOR_NEUTRAL, "2회 이상": COLOR_CRITICAL},
         text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
         custom_data=["total_customers", "churned_customers"],
-        title="재문의 횟수 구간별 이탈율",
-        labels={"recontact_bucket": "재문의 횟수", "churn_rate": "이탈율 (%)"},
+        title="재문의 횟수 구간별 이탈률",
+        labels={"recontact_bucket": "재문의 횟수", "churn_rate": "이탈률 (%)"},
         category_orders={"recontact_bucket": bucket_order},
     )
     fig.update_traces(
         textposition="outside",
         hovertemplate=(
             "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{y:.2f}%<extra></extra>"
+            "이탈 고객 수: %{customdata[1]:,}명<br>이탈률: %{y:.2f}%<extra></extra>"
         ),
     )
     fig.add_hline(
         y=overall_rate,
         line_dash="dash",
         line_color="#52514e",
-        annotation_text=f"전체 평균 이탈율 {overall_rate:.1f}%",
+        annotation_text=f"전체 평균 이탈률 {overall_rate:.1f}%",
         annotation_position="top right",
     )
     fig.update_layout(
@@ -668,15 +668,15 @@ def build_plan_chart(customers):
         color_discrete_map=color_map,
         text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
         custom_data=["total_customers", "churned_customers"],
-        title="요금제(plan)별 이탈율",
-        labels={"plan": "요금제", "churn_rate": "이탈율 (%)"},
+        title="요금제(plan)별 이탈률",
+        labels={"plan": "요금제", "churn_rate": "이탈률 (%)"},
         category_orders={"plan": list(summary["plan"])},
     )
     fig.update_traces(
         textposition="outside",
         hovertemplate=(
             "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{y:.2f}%<extra></extra>"
+            "이탈 고객 수: %{customdata[1]:,}명<br>이탈률: %{y:.2f}%<extra></extra>"
         ),
     )
     fig.update_layout(
@@ -714,22 +714,22 @@ def build_region_chart(customers):
         color_discrete_map=color_map,
         text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
         custom_data=["total_customers", "churned_customers"],
-        title="지역(region)별 이탈율",
-        labels={"region": "지역", "churn_rate": "이탈율 (%)"},
+        title="지역(region)별 이탈률",
+        labels={"region": "지역", "churn_rate": "이탈률 (%)"},
         category_orders={"region": list(summary["region"])},
     )
     fig.update_traces(
         textposition="outside",
         hovertemplate=(
             "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{y:.2f}%<extra></extra>"
+            "이탈 고객 수: %{customdata[1]:,}명<br>이탈률: %{y:.2f}%<extra></extra>"
         ),
     )
 
     incheon = summary.loc[summary["region"] == "인천"].iloc[0]
     caption = (
         f"※ 인천은 표본이 {int(incheon['total_customers'])}건이지만 "
-        f"이탈은 {int(incheon['churned_customers'])}건뿐이라 이탈율 해석에 주의가 필요합니다."
+        f"이탈은 {int(incheon['churned_customers'])}건뿐이라 이탈률 해석에 주의가 필요합니다."
     )
 
     fig.update_layout(

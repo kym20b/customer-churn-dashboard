@@ -1,4 +1,4 @@
-"""전체 고객 이탈율 vs 해지관련 부정 VOC 이력 고객 이탈율 비교 (plotly.express)"""
+"""전체 고객 이탈률 vs 해지관련 부정 VOC 이력 고객 이탈률 비교 (plotly.express)"""
 import os
 
 import pandas as pd
@@ -48,8 +48,8 @@ fig = px.bar(
     },
     text=df["churn_rate"].map(lambda v: f"{v:.1f}%"),
     custom_data=["total_customers", "churned_customers", "churn_rate"],
-    title="전체 고객 vs 해지관련 부정 VOC 이력 고객 이탈율 비교",
-    labels={"category": "", "churn_rate": "이탈율 (%)"},
+    title="전체 고객 vs 해지관련 부정 VOC 이력 고객 이탈률 비교",
+    labels={"category": "", "churn_rate": "이탈률 (%)"},
 )
 
 fig.update_traces(
@@ -58,7 +58,7 @@ fig.update_traces(
         "<b>%{x}</b><br>"
         "고객 수: %{customdata[0]:,}명<br>"
         "이탈 고객 수: %{customdata[1]:,}명<br>"
-        "이탈율: %{customdata[2]:.2f}%"
+        "이탈률: %{customdata[2]:.2f}%"
         "<extra></extra>"
     ),
 )
@@ -72,7 +72,7 @@ fig.update_layout(
     title_font=dict(size=18),
 )
 
-print(f"전체 고객 이탈율: {overall_rate:.2f}% ({overall_churned}/{overall_total})")
-print(f"해지관련 부정 VOC 이력 고객 이탈율: {target_rate:.2f}% ({target_churned}/{target_total})")
+print(f"전체 고객 이탈률: {overall_rate:.2f}% ({overall_churned}/{overall_total})")
+print(f"해지관련 부정 VOC 이력 고객 이탈률: {target_rate:.2f}% ({target_churned}/{target_total})")
 
 fig.show()

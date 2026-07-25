@@ -1,4 +1,4 @@
-"""지역(region)별 고객 수와 이탈율 비교 (부산·대구 강조)"""
+"""지역(region)별 고객 수와 이탈률 비교 (부산·대구 강조)"""
 import os
 
 import pandas as pd
@@ -38,8 +38,8 @@ fig = px.bar(
     color_discrete_map=color_map,
     text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
     custom_data=["total_customers", "churned_customers"],
-    title="지역(region)별 이탈율",
-    labels={"region": "지역", "churn_rate": "이탈율 (%)"},
+    title="지역(region)별 이탈률",
+    labels={"region": "지역", "churn_rate": "이탈률 (%)"},
     category_orders={"region": list(summary["region"])},
 )
 
@@ -49,16 +49,16 @@ fig.update_traces(
         "<b>%{x}</b><br>"
         "고객 수: %{customdata[0]:,}명<br>"
         "이탈 고객 수: %{customdata[1]:,}명<br>"
-        "이탈율: %{y:.2f}%"
+        "이탈률: %{y:.2f}%"
         "<extra></extra>"
     ),
 )
 
-# 인천은 표본이 작아(53건, 이탈 1건) 이탈율이 낮게 나온 것으로 보이므로 캡션으로 명시
+# 인천은 표본이 작아(53건, 이탈 1건) 이탈률이 낮게 나온 것으로 보이므로 캡션으로 명시
 incheon = summary.loc[summary["region"] == "인천"].iloc[0]
 caption = (
     f"※ 인천은 표본이 {int(incheon['total_customers'])}건이지만 "
-    f"이탈은 {int(incheon['churned_customers'])}건뿐이라 이탈율 해석에 주의가 필요합니다."
+    f"이탈은 {int(incheon['churned_customers'])}건뿐이라 이탈률 해석에 주의가 필요합니다."
 )
 
 fig.update_layout(
