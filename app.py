@@ -119,26 +119,26 @@ def dashboard_page():
         c.render_stat_tile("전체 이탈율", f"{churn_rate:.1f}%", status="critical")
 
     st.write("")
-    st.subheader("① VOC로 본 이탈")
+    st.subheader("① VOC로 본 이탈률")
     st.plotly_chart(c.build_voc_chart(customers, voc), width="stretch", config=c.PLOTLY_CONFIG)
 
-    st.subheader("② 채널·만족도로 본 이탈")
+    st.subheader("② 채널·만족도로 본 이탈률")
     st.plotly_chart(
         c.build_channel_csat_chart(consultations, satisfaction), width="stretch", config=c.PLOTLY_CONFIG
     )
 
-    st.subheader("③ 재문의 반복으로 본 이탈")
+    st.subheader("③ 재문의 반복으로 본 이탈률")
     st.plotly_chart(
         c.build_recontact_bucket_chart(consultations, customers), width="stretch", config=c.PLOTLY_CONFIG
     )
 
-    st.subheader("④ 요금제로 본 이탈")
+    st.subheader("④ 요금제로 본 이탈률")
     st.plotly_chart(c.build_plan_chart(customers), width="stretch", config=c.PLOTLY_CONFIG)
 
-    st.subheader("⑤ 지역으로 본 이탈")
+    st.subheader("⑤ 지역으로 본 이탈률")
     st.plotly_chart(c.build_region_chart(customers), width="stretch", config=c.PLOTLY_CONFIG)
 
-    st.subheader("⑥ 가입기간·이용량으로 본 이탈")
+    st.subheader("⑥ 가입기간·이용량으로 본 이탈분포")
     st.plotly_chart(c.build_tenure_usage_chart(customers, usage), width="stretch", config=c.PLOTLY_CONFIG)
 
     # ── 상담원 관점: 직원만족도와 고객 경험 ────────────────────────
