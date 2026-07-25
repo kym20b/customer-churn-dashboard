@@ -26,6 +26,7 @@ COLOR_POSITIVE_ZONE = "#e1e0d9"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(BASE_DIR, "data")
+REPORT_PATH = os.path.join(BASE_DIR, "report", "고객서비스_만족도개선_리포트.md")
 
 BQ_PROJECT = "sql-study-493001"
 BQ_DATASET = "project1_day1"
@@ -52,6 +53,13 @@ def load_data():
 
 
 customers, voc, consultations, satisfaction, usage = load_data()
+
+
+@st.cache_data
+def load_report_markdown():
+    """report/고객서비스_만족도개선_리포트.md 전체 내용을 읽어온다."""
+    with open(REPORT_PATH, "r", encoding="utf-8") as f:
+        return f.read()
 
 
 def has_bigquery_credentials() -> bool:
@@ -560,73 +568,78 @@ def build_tenure_usage_chart(customers, usage):
     return fig
 
 
-# ── 대시보드 레이아웃 ─────────────────────────────────────────────
+# ── 대시보드 레이아웃 (탭 2개: 대시보드 / 개선 제안 리포트) ────────
 st.title("고객은 왜 이탈하는가 — 이탈 원인 진단 대시보드")
 
-total_customers = len(customers)
-churned_customers = int((customers["churn_yn"] == "Y").sum())
-churn_rate = churned_customers / total_customers * 100
+tab1, tab2 = st.tabs(["대시보드", "개선 제안 리포트"])
 
-col1, col2, col3 = st.columns(3)
-col1.metric("전체 고객 수", f"{total_customers:,}")
-col2.metric("이탈 고객 수", f"{churned_customers:,}")
-col3.metric("전체 이탈율", f"{churn_rate:.1f}%")
+with tab1:
+    total_customers = len(customers)
+    churned_customers = int((customers["churn_yn"] == "Y").sum())
+    churn_rate = churned_customers / total_customers * 100
 
-st.subheader("① VOC로 본 이탈")
-st.plotly_chart(build_voc_chart(customers, voc), width="stretch")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("전체 고객 수", f"{total_customers:,}")
+    col2.metric("이탈 고객 수", f"{churned_customers:,}")
+    col3.metric("전체 이탈율", f"{churn_rate:.1f}%")
 
-st.subheader("② 채널·만족도로 본 이탈")
-st.plotly_chart(build_channel_csat_chart(consultations, satisfaction), width="stretch")
+    st.subheader("① VOC로 본 이탈")
+    st.plotly_chart(build_voc_chart(customers, voc), width="stretch")
 
-st.subheader("③ 재문의 반복으로 본 이탈")
-st.plotly_chart(build_recontact_bucket_chart(consultations, customers), width="stretch")
+    st.subheader("② 채널·만족도로 본 이탈")
+    st.plotly_chart(build_channel_csat_chart(consultations, satisfaction), width="stretch")
 
-st.subheader("④ 요금제로 본 이탈")
-st.plotly_chart(build_plan_chart(customers), width="stretch")
+    st.subheader("③ 재문의 반복으로 본 이탈")
+    st.plotly_chart(build_recontact_bucket_chart(consultations, customers), width="stretch")
 
-st.subheader("⑤ 지역으로 본 이탈")
-st.plotly_chart(build_region_chart(customers), width="stretch")
+    st.subheader("④ 요금제로 본 이탈")
+    st.plotly_chart(build_plan_chart(customers), width="stretch")
 
-st.subheader("⑥ 가입기간·이용량으로 본 이탈")
-st.plotly_chart(build_tenure_usage_chart(customers, usage), width="stretch")
+    st.subheader("⑤ 지역으로 본 이탈")
+    st.plotly_chart(build_region_chart(customers), width="stretch")
 
+    st.subheader("⑥ 가입기간·이용량으로 본 이탈")
+    st.plotly_chart(build_tenure_usage_chart(customers, usage), width="stretch")
 
-# ── 상담원 관점: 직원만족도와 고객 경험 ────────────────────────────
-st.divider()
-st.subheader("상담원 관점: 직원만족도와 고객 경험")
+    # ── 상담원 관점: 직원만족도와 고객 경험 ────────────────────────
+    st.divider()
+    st.subheader("상담원 관점: 직원만족도와 고객 경험")
 
-agent_df, consult_df, is_live = load_agent_data_with_fallback()
+    agent_df, consult_df, is_live = load_agent_data_with_fallback()
 
-if is_live:
-    st.caption("🟢 BigQuery 라이브 데이터")
-else:
-    st.caption(
-        f"🟡 로컬 스냅샷 데이터 ({SNAPSHOT_DATE} 기준) — 배포 환경에 BigQuery 인증 정보가 없어 "
-        "그 시점에 미리 내려받아 둔 데이터로 대체 표시 중입니다. 최신 값이 아닐 수 있습니다."
-    )
+    if is_live:
+        st.caption("🟢 BigQuery 라이브 데이터")
+    else:
+        st.caption(
+            f"🟡 로컬 스냅샷 데이터 ({SNAPSHOT_DATE} 기준) — 배포 환경에 BigQuery 인증 정보가 없어 "
+            "그 시점에 미리 내려받아 둔 데이터로 대체 표시 중입니다. 최신 값이 아닐 수 있습니다."
+        )
 
-team_options = ["전체"] + sorted(agent_df["team"].unique())
-selected_team = st.selectbox("팀 선택", team_options)
+    team_options = ["전체"] + sorted(agent_df["team"].unique())
+    selected_team = st.selectbox("팀 선택", team_options)
 
-# selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
-# 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
-if selected_team == "전체":
-    filtered_agents = agent_df
-    filtered_consults = consult_df
-else:
-    filtered_agents = agent_df[agent_df["team"] == selected_team]
-    filtered_consults = consult_df[consult_df["team"] == selected_team]
+    # selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
+    # 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
+    if selected_team == "전체":
+        filtered_agents = agent_df
+        filtered_consults = consult_df
+    else:
+        filtered_agents = agent_df[agent_df["team"] == selected_team]
+        filtered_consults = consult_df[consult_df["team"] == selected_team]
 
-st.caption(f"선택: {selected_team}  ·  상담원 {len(filtered_agents)}명  ·  상담 {len(filtered_consults):,}건")
+    st.caption(f"선택: {selected_team}  ·  상담원 {len(filtered_agents)}명  ·  상담 {len(filtered_consults):,}건")
 
-gauge_col, scatter_col = st.columns([1, 2])
-with gauge_col:
-    st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
-with scatter_col:
+    gauge_col, scatter_col = st.columns([1, 2])
+    with gauge_col:
+        st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
+    with scatter_col:
+        st.plotly_chart(
+            build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
+        )
+
     st.plotly_chart(
-        build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
+        build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
     )
 
-st.plotly_chart(
-    build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
-)
+with tab2:
+    st.markdown(load_report_markdown())
