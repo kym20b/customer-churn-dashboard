@@ -1,624 +1,164 @@
-"""고객은 왜 이탈하는가 — 이탈 원인 진단 대시보드 강의용"""
-import os
+"""고객은 왜 이탈하는가 — 이탈 원인 진단 대시보드 강의용 (st.navigation 멀티페이지)"""
+import html
+import re
 
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
-from dateutil.relativedelta import relativedelta
-from google.cloud import bigquery
-from google.oauth2 import service_account
-from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="고객은 왜 이탈하는가", layout="wide")
+import common as c
 
-# 색상 (dataviz 스킬 팔레트)
-COLOR_NEUTRAL = "#898781"
-COLOR_CRITICAL = "#d03b3b"
-COLOR_ACTIVE = "#0ca30c"
-COLOR_GOOD = "#0ca30c"
-COLOR_BAR = "#2a78d6"
-COLOR_LINE = "#e34948"
-COLOR_GRID = "#e1e0d9"
-COLOR_HIGHLIGHT = "#2a78d6"
-COLOR_NEGATIVE_ZONE = "#f6d9d6"
-COLOR_POSITIVE_ZONE = "#e1e0d9"
+st.set_page_config(page_title="고객은 왜 이탈하는가", layout="wide", page_icon="📊")
+c.inject_global_css()
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")
-REPORT_PATH = os.path.join(BASE_DIR, "report", "고객서비스_만족도개선_리포트.md")
-
-BQ_PROJECT = "sql-study-493001"
-BQ_DATASET = "project1_day1"
-
-SNAPSHOT_DATE = "2026-07-24"
-AGENT_SNAPSHOT_PATH = os.path.join(DATA_DIR, "agents_snapshot.csv")
-CONSULT_SNAPSHOT_PATH = os.path.join(DATA_DIR, "agent_consultations_snapshot.csv")
-
-CHART_LAYOUT = dict(
-    plot_bgcolor="#fcfcfb",
-    paper_bgcolor="#fcfcfb",
-    font=dict(family="Malgun Gothic, sans-serif", color="#0b0b0b"),
-)
+WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(?:\|[^\]]+)?\]\]")
+FRONTMATTER_RE = re.compile(r"^---\n.*?\n---\n", re.DOTALL)
+BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.DOTALL)
+CONFIDENCE_BADGE_COLOR = {"높음": "green", "중간": "orange", "낮음": "red"}
 
 
-@st.cache_data
-def load_data():
-    customers = pd.read_csv(os.path.join(DATA_DIR, "data_customers.csv"))
-    voc = pd.read_csv(os.path.join(DATA_DIR, "data_voc.csv"))
-    consultations = pd.read_csv(os.path.join(DATA_DIR, "data_consultations.csv"))
-    satisfaction = pd.read_csv(os.path.join(DATA_DIR, "data_satisfaction.csv"))
-    usage = pd.read_csv(os.path.join(DATA_DIR, "data_usage_history.csv"))
-    return customers, voc, consultations, satisfaction, usage
+def clean_text(text: str) -> str:
+    """옵시디언 위키링크 [[x]]를 코드 스타일로, 남는 공백을 정리한다."""
+    return WIKILINK_RE.sub(r"`\1`", text).strip()
 
 
-customers, voc, consultations, satisfaction, usage = load_data()
+def render_md(text: str):
+    """clean_text 처리 후 렌더링한다. **볼드**는 마크다운 자체 파싱에 맡기지 않고
+    미리 <strong> 태그로 바꿔서 넣는다 — Streamlit 마크다운 렌더러가 한 문단 안에
+    볼드 구간이 여러 개 있을 때(특히 퍼센트·괄호 뒤) 일부를 문자 그대로 노출하는
+    버그가 있어, 이를 우회하기 위함이다."""
+    text = clean_text(text)
+    rendered = BOLD_RE.sub(r"<strong>\1</strong>", text)
+    st.markdown(rendered, unsafe_allow_html=True)
 
 
-@st.cache_data
-def load_report_markdown():
-    """report/고객서비스_만족도개선_리포트.md 전체 내용을 읽어온다."""
-    with open(REPORT_PATH, "r", encoding="utf-8") as f:
-        return f.read()
+def confidence_badge(level: str):
+    st.badge(f"confidence: {level}", color=CONFIDENCE_BADGE_COLOR.get(level, "gray"))
 
 
-def has_bigquery_credentials() -> bool:
-    """BigQuery 인증 정보가 있을 가능성이 있는지 빠르게(네트워크 호출 없이) 확인한다.
-    st.secrets에 서비스 계정이 없고 로컬 ADC 파일도 없으면, google-auth의 다단계
-    자격증명 탐색(특히 GCE 메타데이터 서버 타임아웃)을 굳이 기다리지 않고 바로
-    스냅샷으로 넘어가기 위한 사전 체크다."""
-    try:
-        if "gcp_service_account" in st.secrets:
-            return True
-    except Exception:
-        pass  # secrets.toml 자체가 없는 로컬 환경
+def parse_markdown_table(md_text: str) -> pd.DataFrame:
+    """마크다운 표 문자열을 DataFrame으로 변환한다. 위키링크는 정리하고 굵게 표시는 제거한다."""
+    lines = [l for l in md_text.strip().split("\n") if l.strip().startswith("|")]
+    header = [clean_text(cell.strip()).replace("**", "") for cell in lines[0].strip("|").split("|")]
+    rows = []
+    for line in lines[2:]:
+        cells = [clean_text(cell.strip()).replace("**", "") for cell in line.strip("|").split("|")]
+        if len(cells) == len(header):
+            rows.append(cells)
+    return pd.DataFrame(rows, columns=header)
 
-    env_path = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-    if env_path and os.path.isfile(env_path):
-        return True
 
-    default_adc_path = os.path.join(
-        os.environ.get("APPDATA", os.path.expanduser("~")), "gcloud", "application_default_credentials.json"
+def to_html_inline(text: str) -> str:
+    """순수 HTML 컨텍스트(커스텀 표 셀 등)에서 쓸 인라인 텍스트로 변환한다.
+    HTML 특수문자를 이스케이프한 뒤 위키링크→<code>, **볼드**→<strong>로 바꾼다."""
+    text = html.escape(text)
+    text = WIKILINK_RE.sub(r"<code>\1</code>", text)
+    text = BOLD_RE.sub(r"<strong>\1</strong>", text)
+    return text
+
+
+def render_html_table(df: pd.DataFrame, center_cols: set):
+    """순위/임팩트/난이도처럼 중앙정렬이 필요한 표를 커스텀 HTML 표로 렌더링한다.
+    (st.dataframe은 캔버스 기반이라 헤더 굵게·정렬을 CSS로 제어할 수 없어 직접 그린다.)"""
+    headers = "".join(f"<th>{to_html_inline(col)}</th>" for col in df.columns)
+    rows_html = []
+    for _, row in df.iterrows():
+        cells = []
+        for col in df.columns:
+            cls = ' class="center"' if col in center_cols else ""
+            cells.append(f"<td{cls}>{to_html_inline(str(row[col]))}</td>")
+        rows_html.append(f"<tr>{''.join(cells)}</tr>")
+    table_html = (
+        f'<table class="report-table"><thead><tr>{headers}</tr></thead>'
+        f"<tbody>{''.join(rows_html)}</tbody></table>"
     )
-    if os.path.isfile(default_adc_path):
-        return True
-    posix_adc_path = os.path.expanduser("~/.config/gcloud/application_default_credentials.json")
-    return os.path.isfile(posix_adc_path)
+    st.markdown(table_html, unsafe_allow_html=True)
 
 
-def get_bigquery_client():
-    """Streamlit Cloud에서는 st.secrets의 서비스 계정으로, 로컬에서는 ADC로 인증한다."""
-    try:
-        has_secret = "gcp_service_account" in st.secrets
-    except Exception:
-        has_secret = False  # secrets.toml 자체가 없는 로컬 환경
-
-    if has_secret:
-        credentials = service_account.Credentials.from_service_account_info(
-            dict(st.secrets["gcp_service_account"])
-        )
-        return bigquery.Client(project=BQ_PROJECT, credentials=credentials)
-    return bigquery.Client(project=BQ_PROJECT)
+def _render_plan_region_pair(customers):
+    """4-2절 전용: 요금제·지역 차트를 나란히(같은 높이) 배치한다."""
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.plotly_chart(c.build_plan_chart(customers), width="stretch", config=c.PLOTLY_CONFIG)
+    with col_b:
+        st.plotly_chart(c.build_region_chart(customers), width="stretch", config=c.PLOTLY_CONFIG)
 
 
-@st.cache_data
-def load_bigquery_agent_data():
-    """BigQuery agents/consultations/satisfaction을 조인해 상담원 단위·상담 단위 데이터를 가져온다."""
-    client = get_bigquery_client()
-
-    agent_query = f"""
-    WITH agent_csat AS (
-      SELECT c.agent_id, AVG(s.csat) AS avg_csat
-      FROM `{BQ_PROJECT}.{BQ_DATASET}.consultations` c
-      JOIN `{BQ_PROJECT}.{BQ_DATASET}.satisfaction` s ON c.consult_id = s.consult_id
-      WHERE c.agent_id IS NOT NULL
-      GROUP BY c.agent_id
-    )
-    SELECT
-      a.agent_id,
-      a.team,
-      a.overtime_hours_avg,
-      a.agent_satisfaction,
-      ac.avg_csat
-    FROM `{BQ_PROJECT}.{BQ_DATASET}.agents` a
-    JOIN agent_csat ac ON a.agent_id = ac.agent_id
-    """
-
-    consult_query = f"""
-    SELECT
-      c.agent_id,
-      a.team,
-      a.training_completed_yn,
-      c.is_recontact,
-      s.csat
-    FROM `{BQ_PROJECT}.{BQ_DATASET}.consultations` c
-    JOIN `{BQ_PROJECT}.{BQ_DATASET}.satisfaction` s ON c.consult_id = s.consult_id
-    JOIN `{BQ_PROJECT}.{BQ_DATASET}.agents` a ON c.agent_id = a.agent_id
-    """
-
-    agent_df = client.query(agent_query).result().to_dataframe()
-    consult_df = client.query(consult_query).result().to_dataframe()
-    return agent_df, consult_df
+def split_sections(body: str) -> dict:
+    """'## N. 제목' 최상위 헤더 기준으로 본문을 {번호: (제목, 내용)}로 분할한다."""
+    pattern = re.compile(r"^## (\d+)\.\s+(.+)$", re.MULTILINE)
+    matches = list(pattern.finditer(body))
+    sections = {}
+    for i, m in enumerate(matches):
+        start = m.end()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        sections[m.group(1)] = (m.group(2).strip(), body[start:end].strip())
+    return sections
 
 
-@st.cache_data
-def load_agent_snapshot():
-    """BigQuery에 연결할 수 없을 때 쓸 로컬 스냅샷(data/*_snapshot.csv)을 읽는다.
-    스냅샷은 SNAPSHOT_DATE 시점에 load_bigquery_agent_data()와 동일한 쿼리로 미리 내려받아 둔 것이라
-    실시간 데이터가 아니다."""
-    agent_df = pd.read_csv(AGENT_SNAPSHOT_PATH)
-    consult_df = pd.read_csv(CONSULT_SNAPSHOT_PATH)
-    return agent_df, consult_df
+# ──────────────────────────────────────────────────────────────────
+# 대시보드 페이지
+# ──────────────────────────────────────────────────────────────────
+def dashboard_page():
+    customers, voc, consultations, satisfaction, usage = c.load_data()
 
-
-def load_agent_data_with_fallback():
-    """인증 정보가 있을 때만 BigQuery 라이브 조회를 시도하고, 없거나 실패하면 로컬 스냅샷으로 대체한다.
-    (agent_df, consult_df, is_live) 튜플을 반환한다.
-    인증 정보가 아예 없는 게 확인되면 라이브 시도 자체를 건너뛰어, google-auth가 GCE
-    메타데이터 서버 응답을 기다리며 매번 몇 초씩 지연되는 것을 방지한다."""
-    if not has_bigquery_credentials():
-        agent_df, consult_df = load_agent_snapshot()
-        return agent_df, consult_df, False
-
-    try:
-        agent_df, consult_df = load_bigquery_agent_data()
-        return agent_df, consult_df, True
-    except Exception:
-        agent_df, consult_df = load_agent_snapshot()
-        return agent_df, consult_df, False
-
-
-def compute_enps(satisfaction_scores):
-    promoters = (satisfaction_scores >= 9).sum()
-    detractors = (satisfaction_scores <= 6).sum()
-    return (promoters - detractors) * 100.0 / len(satisfaction_scores)
-
-
-def build_enps_gauge(agent_df, title):
-    enps = compute_enps(agent_df["agent_satisfaction"])
-    fig = go.Figure(
-        go.Indicator(
-            mode="gauge+number",
-            value=enps,
-            title={"text": title, "font": {"size": 18}},
-            number={"font": {"size": 36, "color": COLOR_CRITICAL if enps < 0 else COLOR_GOOD}},
-            gauge={
-                "axis": {"range": [-100, 100]},
-                "bar": {"color": COLOR_CRITICAL if enps < 0 else COLOR_GOOD},
-                "steps": [
-                    {"range": [-100, 0], "color": COLOR_NEGATIVE_ZONE},
-                    {"range": [0, 100], "color": COLOR_POSITIVE_ZONE},
-                ],
-                "threshold": {"line": {"color": "#52514e", "width": 2}, "thickness": 0.8, "value": 0},
-            },
-        )
-    )
-    fig.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=10), **CHART_LAYOUT)
-    return fig
-
-
-def build_burnout_csat_chart(agent_df, title):
-    fig = px.scatter(
-        agent_df,
-        x="overtime_hours_avg",
-        y="avg_csat",
-        trendline="ols" if agent_df["overtime_hours_avg"].nunique() >= 2 else None,
-        custom_data=["agent_id", "overtime_hours_avg", "avg_csat"],
-        title=title,
-        labels={"overtime_hours_avg": "초과근무 시간 (평균, 시간)", "avg_csat": "CSAT 평균"},
-    )
-    fig.update_traces(
-        selector=dict(mode="markers"),
-        marker=dict(size=10, color=COLOR_HIGHLIGHT, opacity=0.85),
-        hovertemplate=(
-            "<b>%{customdata[0]}</b><br>초과근무: %{customdata[1]}시간<br>CSAT 평균: %{customdata[2]:.2f}<extra></extra>"
-        ),
-    )
-    fig.update_traces(selector=dict(mode="lines"), line=dict(color=COLOR_CRITICAL, width=2))
-    if agent_df["overtime_hours_avg"].nunique() >= 2 and agent_df["overtime_hours_avg"].std() > 0:
-        r = agent_df["overtime_hours_avg"].corr(agent_df["avg_csat"])
-        fig.add_annotation(
-            xref="paper", yref="paper", x=0.98, y=0.98,
-            text=f"r = {r:.2f}", showarrow=False, font=dict(size=14),
-        )
-    fig.update_layout(xaxis=dict(gridcolor=COLOR_GRID), yaxis=dict(gridcolor=COLOR_GRID), **CHART_LAYOUT)
-    return fig
-
-
-def build_training_compare_chart(consult_df, title):
-    summary = (
-        consult_df.groupby("training_completed_yn")
-        .agg(n=("csat", "count"), avg_csat=("csat", "mean"), recontact_rate=("is_recontact", "mean"))
-        .reset_index()
-    )
-    summary["recontact_rate"] *= 100
-    summary["label"] = summary["training_completed_yn"].map({True: "Y (이수)", False: "N (미이수)"})
-    summary = summary.sort_values("training_completed_yn", ascending=False)
-    bar_colors = summary["label"].map({"Y (이수)": COLOR_HIGHLIGHT, "N (미이수)": COLOR_NEUTRAL})
-
-    fig = make_subplots(rows=1, cols=2, subplot_titles=("CSAT 평균", "재문의율 평균 (%)"))
-    fig.add_trace(
-        go.Bar(
-            x=summary["label"], y=summary["avg_csat"], marker_color=bar_colors,
-            text=summary["avg_csat"].map(lambda v: f"{v:.2f}"), textposition="outside", showlegend=False,
-        ),
-        row=1, col=1,
-    )
-    fig.add_trace(
-        go.Bar(
-            x=summary["label"], y=summary["recontact_rate"], marker_color=bar_colors,
-            text=summary["recontact_rate"].map(lambda v: f"{v:.1f}%"), textposition="outside", showlegend=False,
-        ),
-        row=1, col=2,
-    )
-    fig.update_yaxes(range=[0, summary["avg_csat"].max() * 1.3], gridcolor=COLOR_GRID, row=1, col=1)
-    fig.update_yaxes(range=[0, summary["recontact_rate"].max() * 1.3], gridcolor=COLOR_GRID, row=1, col=2)
-    fig.update_layout(title=title, **CHART_LAYOUT)
-    return fig
-
-
-# ── ① VOC로 본 이탈 ──────────────────────────────────────────────
-def build_voc_chart(customers, voc):
-    target_ids = voc.loc[
-        (voc["category"] == "해지관련") & (voc["sentiment"] == "부정"), "customer_id"
-    ].unique()
-    target_customers = customers[customers["customer_id"].isin(target_ids)]
-    target_total = len(target_customers)
-    target_churned = int((target_customers["churn_yn"] == "Y").sum())
-    target_rate = target_churned / target_total * 100
-
-    overall_total = len(customers)
-    overall_churned = int((customers["churn_yn"] == "Y").sum())
-    overall_rate = overall_churned / overall_total * 100
-
-    df = pd.DataFrame(
-        {
-            "category": ["전체 고객", "해지관련 부정 VOC 이력 있음"],
-            "churn_rate": [overall_rate, target_rate],
-            "total_customers": [overall_total, target_total],
-            "churned_customers": [overall_churned, target_churned],
-        }
+    c.render_hero(
+        "고객은 왜 이탈하는가",
+        "이탈 원인 진단 대시보드 · VOC·채널·요금제·지역·상담원 데이터를 한 곳에서 살펴봅니다",
     )
 
-    fig = px.bar(
-        df,
-        x="category",
-        y="churn_rate",
-        color="category",
-        color_discrete_map={
-            "전체 고객": COLOR_NEUTRAL,
-            "해지관련 부정 VOC 이력 있음": COLOR_CRITICAL,
-        },
-        text=df["churn_rate"].map(lambda v: f"{v:.1f}%"),
-        custom_data=["total_customers", "churned_customers", "churn_rate"],
-        title="전체 고객 vs 해지관련 부정 VOC 이력 고객 이탈율 비교",
-        labels={"category": "", "churn_rate": "이탈율 (%)"},
-    )
-    fig.update_traces(
-        textposition="outside",
-        hovertemplate=(
-            "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{customdata[2]:.2f}%<extra></extra>"
-        ),
-    )
-    fig.update_layout(
-        showlegend=False,
-        yaxis=dict(range=[0, max(df["churn_rate"]) * 1.25], gridcolor=COLOR_GRID),
-        **CHART_LAYOUT,
-    )
-    return fig
-
-
-# ── ② 채널·만족도로 본 이탈 ──────────────────────────────────────
-def build_channel_csat_chart(consultations, satisfaction):
-    merged = satisfaction.merge(
-        consultations[["consult_id", "channel", "is_recontact"]], on="consult_id", how="inner"
-    )
-    summary = (
-        merged.groupby("channel")
-        .agg(
-            csat_mean=("csat", "mean"),
-            recontact_rate=("is_recontact", lambda s: (s == "Y").mean() * 100),
-            count=("consult_id", "count"),
-        )
-        .reset_index()
-        .sort_values("csat_mean", ascending=True)
-    )
-
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    fig.add_trace(
-        go.Bar(
-            x=summary["channel"],
-            y=summary["csat_mean"],
-            name="CSAT 평균",
-            marker_color=COLOR_BAR,
-            customdata=summary[["recontact_rate", "count"]],
-            hovertemplate="<b>%{x}</b><br>CSAT 평균: %{y:.2f}<br>재문의율: %{customdata[0]:.1f}%<extra></extra>",
-        ),
-        secondary_y=False,
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=summary["channel"],
-            y=summary["recontact_rate"],
-            name="재문의율",
-            mode="lines+markers",
-            line=dict(color=COLOR_LINE, width=2),
-            marker=dict(size=8, color=COLOR_LINE),
-            customdata=summary[["csat_mean", "count"]],
-            hovertemplate="<b>%{x}</b><br>재문의율: %{y:.1f}%<br>CSAT 평균: %{customdata[0]:.2f}<extra></extra>",
-        ),
-        secondary_y=True,
-    )
-    fig.update_layout(
-        title="채널별 CSAT 평균 vs 재문의율 (CSAT 낮은 순)",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-        hovermode="x unified",
-        **CHART_LAYOUT,
-    )
-    fig.update_yaxes(title_text="CSAT 평균", secondary_y=False, gridcolor=COLOR_GRID)
-    fig.update_yaxes(title_text="재문의율 (%)", secondary_y=True, showgrid=False)
-    fig.update_xaxes(title_text="")
-    return fig
-
-
-# ── ③ 재문의 반복으로 본 이탈 ────────────────────────────────────
-def build_recontact_bucket_chart(consultations, customers):
-    recontact_count = (
-        consultations[consultations["is_recontact"] == "Y"]
-        .groupby("customer_id")
-        .size()
-        .rename("recontact_count")
-    )
-    merged = customers.merge(recontact_count, on="customer_id", how="left")
-    merged["recontact_count"] = merged["recontact_count"].fillna(0).astype(int)
-
-    def bucket(n):
-        if n == 0:
-            return "0회"
-        if n == 1:
-            return "1회"
-        return "2회 이상"
-
-    merged["recontact_bucket"] = merged["recontact_count"].apply(bucket)
-    bucket_order = ["0회", "1회", "2회 이상"]
-
-    summary = (
-        merged.groupby("recontact_bucket")
-        .agg(
-            total_customers=("customer_id", "count"),
-            churned_customers=("churn_yn", lambda s: (s == "Y").sum()),
-        )
-        .reindex(bucket_order)
-        .reset_index()
-    )
-    summary["churn_rate"] = summary["churned_customers"] / summary["total_customers"] * 100
-    overall_rate = (customers["churn_yn"] == "Y").mean() * 100
-
-    fig = px.bar(
-        summary,
-        x="recontact_bucket",
-        y="churn_rate",
-        color="recontact_bucket",
-        color_discrete_map={"0회": COLOR_NEUTRAL, "1회": COLOR_NEUTRAL, "2회 이상": COLOR_CRITICAL},
-        text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
-        custom_data=["total_customers", "churned_customers"],
-        title="재문의 횟수 구간별 이탈율",
-        labels={"recontact_bucket": "재문의 횟수", "churn_rate": "이탈율 (%)"},
-        category_orders={"recontact_bucket": bucket_order},
-    )
-    fig.update_traces(
-        textposition="outside",
-        hovertemplate=(
-            "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{y:.2f}%<extra></extra>"
-        ),
-    )
-    fig.add_hline(
-        y=overall_rate,
-        line_dash="dash",
-        line_color="#52514e",
-        annotation_text=f"전체 평균 이탈율 {overall_rate:.1f}%",
-        annotation_position="top right",
-    )
-    fig.update_layout(
-        showlegend=False,
-        yaxis=dict(range=[0, max(summary["churn_rate"].max(), overall_rate) * 1.3], gridcolor=COLOR_GRID),
-        **CHART_LAYOUT,
-    )
-    return fig
-
-
-# ── ④ 요금제로 본 이탈 ───────────────────────────────────────────
-def build_plan_chart(customers):
-    highlight_plan = "베이직"
-    summary = (
-        customers.groupby("plan")
-        .agg(
-            total_customers=("customer_id", "count"),
-            churned_customers=("churn_yn", lambda s: (s == "Y").sum()),
-        )
-        .reset_index()
-    )
-    summary["churn_rate"] = summary["churned_customers"] / summary["total_customers"] * 100
-    summary = summary.sort_values("churn_rate", ascending=False)
-
-    color_map = {plan: (COLOR_CRITICAL if plan == highlight_plan else COLOR_NEUTRAL) for plan in summary["plan"]}
-
-    fig = px.bar(
-        summary,
-        x="plan",
-        y="churn_rate",
-        color="plan",
-        color_discrete_map=color_map,
-        text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
-        custom_data=["total_customers", "churned_customers"],
-        title="요금제(plan)별 이탈율",
-        labels={"plan": "요금제", "churn_rate": "이탈율 (%)"},
-        category_orders={"plan": list(summary["plan"])},
-    )
-    fig.update_traces(
-        textposition="outside",
-        hovertemplate=(
-            "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{y:.2f}%<extra></extra>"
-        ),
-    )
-    fig.update_layout(
-        showlegend=False,
-        yaxis=dict(range=[0, summary["churn_rate"].max() * 1.25], gridcolor=COLOR_GRID),
-        **CHART_LAYOUT,
-    )
-    return fig
-
-
-# ── ⑤ 지역으로 본 이탈 ───────────────────────────────────────────
-def build_region_chart(customers):
-    highlight_regions = ["부산", "대구"]
-    summary = (
-        customers.groupby("region")
-        .agg(
-            total_customers=("customer_id", "count"),
-            churned_customers=("churn_yn", lambda s: (s == "Y").sum()),
-        )
-        .reset_index()
-    )
-    summary["churn_rate"] = summary["churned_customers"] / summary["total_customers"] * 100
-    summary = summary.sort_values("churn_rate", ascending=False)
-
-    color_map = {
-        region: (COLOR_CRITICAL if region in highlight_regions else COLOR_NEUTRAL)
-        for region in summary["region"]
-    }
-
-    fig = px.bar(
-        summary,
-        x="region",
-        y="churn_rate",
-        color="region",
-        color_discrete_map=color_map,
-        text=summary["churn_rate"].map(lambda v: f"{v:.1f}%"),
-        custom_data=["total_customers", "churned_customers"],
-        title="지역(region)별 이탈율",
-        labels={"region": "지역", "churn_rate": "이탈율 (%)"},
-        category_orders={"region": list(summary["region"])},
-    )
-    fig.update_traces(
-        textposition="outside",
-        hovertemplate=(
-            "<b>%{x}</b><br>고객 수: %{customdata[0]:,}명<br>"
-            "이탈 고객 수: %{customdata[1]:,}명<br>이탈율: %{y:.2f}%<extra></extra>"
-        ),
-    )
-
-    incheon = summary.loc[summary["region"] == "인천"].iloc[0]
-    caption = (
-        f"※ 인천은 표본이 {int(incheon['total_customers'])}건이지만 "
-        f"이탈은 {int(incheon['churned_customers'])}건뿐이라 이탈율 해석에 주의가 필요합니다."
-    )
-
-    fig.update_layout(
-        showlegend=False,
-        yaxis=dict(range=[0, summary["churn_rate"].max() * 1.3], gridcolor=COLOR_GRID),
-        margin=dict(b=100),
-        **CHART_LAYOUT,
-    )
-    fig.add_annotation(
-        text=caption, xref="paper", yref="paper", x=0, y=-0.28,
-        showarrow=False, align="left", font=dict(size=12, color="#52514e"),
-    )
-    return fig
-
-
-# ── ⑥ 가입기간·이용량으로 본 이탈 ────────────────────────────────
-def build_tenure_usage_chart(customers, usage):
-    reference_date = pd.Timestamp("2024-12-31")
-    customers = customers.copy()
-    customers["join_date"] = pd.to_datetime(customers["join_date"])
-    customers["tenure_months"] = customers["join_date"].apply(
-        lambda d: relativedelta(reference_date, d).years * 12 + relativedelta(reference_date, d).months
-    )
-    avg_usage = usage.groupby("customer_id")["data_gb"].mean().rename("avg_data_gb")
-    merged = customers.merge(avg_usage, on="customer_id", how="inner")
-
-    fig = px.scatter(
-        merged,
-        x="tenure_months",
-        y="avg_data_gb",
-        color="churn_yn",
-        color_discrete_map={"N": COLOR_ACTIVE, "Y": COLOR_CRITICAL},
-        category_orders={"churn_yn": ["N", "Y"]},
-        custom_data=["customer_id", "tenure_months", "avg_data_gb", "churn_yn"],
-        title="가입기간 vs 평균 데이터 사용량 (이탈 여부)",
-        labels={"tenure_months": "가입기간 (개월)", "avg_data_gb": "평균 데이터 사용량 (GB)", "churn_yn": "이탈 여부"},
-    )
-    fig.update_traces(
-        marker=dict(size=8, opacity=0.8),
-        hovertemplate=(
-            "<b>%{customdata[0]}</b><br>가입기간: %{customdata[1]}개월<br>"
-            "평균 데이터 사용량: %{customdata[2]:.2f}GB<br>이탈 여부: %{customdata[3]}<extra></extra>"
-        ),
-    )
-    fig.update_layout(
-        xaxis=dict(gridcolor=COLOR_GRID),
-        yaxis=dict(gridcolor=COLOR_GRID),
-        legend_title_text="이탈 여부",
-        **CHART_LAYOUT,
-    )
-    return fig
-
-
-# ── 대시보드 레이아웃 (탭 2개: 대시보드 / 개선 제안 리포트) ────────
-st.title("고객은 왜 이탈하는가 — 이탈 원인 진단 대시보드")
-
-tab1, tab2 = st.tabs(["대시보드", "개선 제안 리포트"])
-
-with tab1:
     total_customers = len(customers)
     churned_customers = int((customers["churn_yn"] == "Y").sum())
     churn_rate = churned_customers / total_customers * 100
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("전체 고객 수", f"{total_customers:,}")
-    col2.metric("이탈 고객 수", f"{churned_customers:,}")
-    col3.metric("전체 이탈율", f"{churn_rate:.1f}%")
+    with col1:
+        c.render_stat_tile("전체 고객 수", f"{total_customers:,}")
+    with col2:
+        c.render_stat_tile("이탈 고객 수", f"{churned_customers:,}", status="critical")
+    with col3:
+        c.render_stat_tile("전체 이탈율", f"{churn_rate:.1f}%", status="critical")
 
+    st.write("")
     st.subheader("① VOC로 본 이탈")
-    st.plotly_chart(build_voc_chart(customers, voc), width="stretch")
+    st.plotly_chart(c.build_voc_chart(customers, voc), width="stretch", config=c.PLOTLY_CONFIG)
 
     st.subheader("② 채널·만족도로 본 이탈")
-    st.plotly_chart(build_channel_csat_chart(consultations, satisfaction), width="stretch")
+    st.plotly_chart(
+        c.build_channel_csat_chart(consultations, satisfaction), width="stretch", config=c.PLOTLY_CONFIG
+    )
 
     st.subheader("③ 재문의 반복으로 본 이탈")
-    st.plotly_chart(build_recontact_bucket_chart(consultations, customers), width="stretch")
+    st.plotly_chart(
+        c.build_recontact_bucket_chart(consultations, customers), width="stretch", config=c.PLOTLY_CONFIG
+    )
 
     st.subheader("④ 요금제로 본 이탈")
-    st.plotly_chart(build_plan_chart(customers), width="stretch")
+    st.plotly_chart(c.build_plan_chart(customers), width="stretch", config=c.PLOTLY_CONFIG)
 
     st.subheader("⑤ 지역으로 본 이탈")
-    st.plotly_chart(build_region_chart(customers), width="stretch")
+    st.plotly_chart(c.build_region_chart(customers), width="stretch", config=c.PLOTLY_CONFIG)
 
     st.subheader("⑥ 가입기간·이용량으로 본 이탈")
-    st.plotly_chart(build_tenure_usage_chart(customers, usage), width="stretch")
+    st.plotly_chart(c.build_tenure_usage_chart(customers, usage), width="stretch", config=c.PLOTLY_CONFIG)
 
     # ── 상담원 관점: 직원만족도와 고객 경험 ────────────────────────
     st.divider()
     st.subheader("상담원 관점: 직원만족도와 고객 경험")
 
-    agent_df, consult_df, is_live = load_agent_data_with_fallback()
+    agent_df, consult_df, is_live = c.load_agent_data_with_fallback()
 
     if is_live:
         st.caption("🟢 BigQuery 라이브 데이터")
     else:
         st.caption(
-            f"🟡 로컬 스냅샷 데이터 ({SNAPSHOT_DATE} 기준) — 배포 환경에 BigQuery 인증 정보가 없어 "
+            f"🟡 로컬 스냅샷 데이터 ({c.SNAPSHOT_DATE} 기준) — 배포 환경에 BigQuery 인증 정보가 없어 "
             "그 시점에 미리 내려받아 둔 데이터로 대체 표시 중입니다. 최신 값이 아닐 수 있습니다."
         )
 
     team_options = ["전체"] + sorted(agent_df["team"].unique())
     selected_team = st.selectbox("팀 선택", team_options)
 
-    # selectbox 값이 바뀌면 app.py 전체가 위에서부터 다시 실행되고,
+    # selectbox 값이 바뀌면 이 함수가 위에서부터 다시 실행되고,
     # 아래 필터링 → 차트 생성이 선택된 팀 기준으로 다시 수행된다.
     if selected_team == "전체":
         filtered_agents = agent_df
@@ -631,15 +171,215 @@ with tab1:
 
     gauge_col, scatter_col = st.columns([1, 2])
     with gauge_col:
-        st.plotly_chart(build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"), width="stretch")
+        st.plotly_chart(
+            c.build_enps_gauge(filtered_agents, f"eNPS ({selected_team})"),
+            width="stretch",
+            config=c.PLOTLY_CONFIG,
+        )
     with scatter_col:
         st.plotly_chart(
-            build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"), width="stretch"
+            c.build_burnout_csat_chart(filtered_agents, f"번아웃 vs CSAT ({selected_team})"),
+            width="stretch",
+            config=c.PLOTLY_CONFIG,
         )
 
     st.plotly_chart(
-        build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"), width="stretch"
+        c.build_training_compare_chart(filtered_consults, f"교육 이수 비교 ({selected_team})"),
+        width="stretch",
+        config=c.PLOTLY_CONFIG,
     )
 
-with tab2:
-    st.markdown(load_report_markdown())
+
+# ──────────────────────────────────────────────────────────────────
+# 개선 제안 리포트 페이지
+# ──────────────────────────────────────────────────────────────────
+def report_page():
+    with st.container(key="report-page"):
+        customers, voc, consultations, satisfaction, usage = c.load_data()
+        raw = c.load_report_markdown()
+
+        frontmatter_match = FRONTMATTER_RE.match(raw)
+        body = raw[frontmatter_match.end():] if frontmatter_match else raw
+
+        title_match = re.search(r"^# (.+)$", body, re.MULTILINE)
+        title = title_match.group(1) if title_match else "리포트"
+        body = body[title_match.end():] if title_match else body
+
+        sections = split_sections(body)
+
+        # ── 헤더 ──
+        c.render_hero(title, "근거 → 해석 → 시사점 순서로 축적된 6개 인사이트(i-001~i-006)를 통합한 처방적 리포트")
+        badge_col1, badge_col2, badge_col3, badge_col4, pdf_col = st.columns([1, 1, 1, 1, 1.4])
+        with badge_col1:
+            st.badge("2026-07-24 작성", icon="📅", color="gray")
+        with badge_col2:
+            st.badge("높음 4건", color="green")
+        with badge_col3:
+            st.badge("중간 1건", color="orange")
+        with badge_col4:
+            st.badge("낮음 1건", color="red")
+        with pdf_col:
+            st.download_button(
+                "📄 PDF로 다운로드",
+                data=c.get_report_pdf_bytes(raw),
+                file_name="고객서비스_만족도개선_리포트.pdf",
+                mime="application/pdf",
+                width="stretch",
+            )
+        st.divider()
+
+        # ── 1. Executive Summary ──
+        st.header(f"1. {sections['1'][0]}")
+        items = re.split(r"^\d+\.\s+", sections["1"][1], flags=re.MULTILINE)
+        items = [it.strip() for it in items if it.strip()]
+        summary_cols = st.columns(len(items))
+        for idx, (col, item) in enumerate(zip(summary_cols, items)):
+            conf_match = re.search(r"\*\*confidence\s+(\S+?)\*\*", item)
+            level = conf_match.group(1) if conf_match else "중간"
+            text_only = re.sub(r"\(\*\*confidence\s+\S+?\*\*\)", "", item).strip()
+            with col:
+                with st.container(border=True, height=220, key=f"summary-card-{idx}"):
+                    confidence_badge(level)
+                    render_md(text_only)
+
+        st.divider()
+
+        # ── 2. 배경·목적 ──
+        st.header(f"2. {sections['2'][0]}")
+        render_md(sections["2"][1])
+
+        st.write("")
+
+        # ── 3. 데이터·방법론 ──
+        st.header(f"3. {sections['3'][0]}")
+        text3 = sections["3"][1]
+        tables3 = re.findall(r"(\|.+\|(?:\n\|.+\|)+)", text3)
+        prose3 = re.sub(r"(\|.+\|(?:\n\|.+\|)+)", "\n[[TABLE]]\n", text3, count=1)
+        prose3_parts = prose3.split("[[TABLE]]")
+        render_md(prose3_parts[0])
+        if tables3:
+            st.dataframe(parse_markdown_table(tables3[0]), width="stretch", hide_index=True)
+        if len(prose3_parts) > 1:
+            render_md(prose3_parts[1])
+        if len(tables3) > 1:
+            st.dataframe(parse_markdown_table(tables3[1]), width="stretch", hide_index=True)
+
+        st.divider()
+
+        # ── 4. 현황 (소절마다 관련 차트 임베드) ──
+        st.header(f"4. {sections['4'][0]}")
+        section4 = sections["4"][1]
+        sub_pattern = re.compile(r"^### (4-\d)\.\s+(.+?)\s*\(confidence:\s*(.+?)\)\s*$", re.MULTILINE)
+        sub_matches = list(sub_pattern.finditer(section4))
+        chart_by_subsection = {
+            "4-1": lambda: st.plotly_chart(
+                c.build_voc_chart(customers, voc), width="stretch", config=c.PLOTLY_CONFIG
+            ),
+            "4-2": lambda: _render_plan_region_pair(customers),
+            "4-3": lambda: st.plotly_chart(
+                c.build_channel_csat_chart(consultations, satisfaction), width="stretch", config=c.PLOTLY_CONFIG
+            ),
+            "4-4": lambda: st.plotly_chart(
+                c.build_recontact_bucket_chart(consultations, customers), width="stretch", config=c.PLOTLY_CONFIG
+            ),
+            "4-5": lambda: st.plotly_chart(
+                c.build_agents_reproducibility_chart(), width="stretch", config=c.PLOTLY_CONFIG
+            ),
+        }
+        for i, m in enumerate(sub_matches):
+            sub_id, sub_title, sub_conf = m.group(1), m.group(2), m.group(3)
+            start = m.end()
+            end = sub_matches[i + 1].start() if i + 1 < len(sub_matches) else len(section4)
+            sub_body = section4[start:end].strip()
+
+            st.subheader(f"{sub_id}. {sub_title}")
+            confidence_badge(sub_conf)
+            render_md(sub_body)
+            renderer = chart_by_subsection.get(sub_id)
+            if renderer:
+                renderer()
+            if i < len(sub_matches) - 1:
+                st.write("")
+
+        st.divider()
+
+        # ── 5. 원인 분석 (카드형) ──
+        st.header(f"5. {sections['5'][0]}")
+        section5 = sections["5"][1]
+        paragraphs = [p.strip() for p in section5.split("\n\n") if p.strip()]
+        intro = [p for p in paragraphs if not p.startswith("**")]
+        cards = [p for p in paragraphs if p.startswith("**")]
+        for p in intro[:1]:
+            render_md(p)
+        # 2x2 그리드, 모든 카드 가로·세로 크기 동일
+        card_cols = st.columns(2) + st.columns(2)
+        icons = ["🔗", "⚙️", "💳", "🚫"]
+        for i, card_text in enumerate(cards):
+            lead_match = re.match(r"\*\*(.+?)\*\*\s*(.*)", card_text, re.DOTALL)
+            lead = lead_match.group(1) if lead_match else ""
+            rest = lead_match.group(2) if lead_match else card_text
+            with card_cols[i]:
+                with st.container(border=True, height=300, key=f"cause-card-{i}"):
+                    st.markdown(f"### {icons[i % len(icons)]} {lead}")
+                    render_md(rest)
+        for p in intro[1:]:
+            render_md(p)
+
+        st.divider()
+
+        # ── 6. 개선 제안 우선순위 (스타일 테이블) ──
+        st.header(f"6. {sections['6'][0]}")
+        section6 = sections["6"][1]
+        tables6 = re.findall(r"(\|.+\|(?:\n\|.+\|)+)", section6)
+        prose6 = re.sub(r"(\|.+\|(?:\n\|.+\|)+)", "\n[[TABLE]]\n", section6, count=2)
+        prose_parts = prose6.split("[[TABLE]]")
+
+        if prose_parts:
+            render_md(prose_parts[0])
+        if tables6:
+            priority_df = parse_markdown_table(tables6[0])
+            # 상/중/하는 순서형 3단계라 억지로 진행률 바(수치 정밀도)로 바꾸지 않고,
+            # 짧은 배지 컬럼(레벨)과 근거 설명(전문)을 분리해 스캔하기 쉽게만 정리한다.
+            priority_df["임팩트"] = priority_df["이탈 감소 임팩트"].str.extract(r"(상|중|하)")[0]
+            priority_df["난이도"] = priority_df["실행 난이도"].str.extract(r"(상|중|하)")[0]
+            priority_df = priority_df.rename(
+                columns={"이탈 감소 임팩트": "임팩트 근거", "실행 난이도": "난이도 근거"}
+            )
+            priority_df = priority_df[["순위", "후보", "임팩트", "임팩트 근거", "난이도", "난이도 근거"]]
+            render_html_table(priority_df, center_cols={"순위", "임팩트", "난이도"})
+            st.caption(
+                "※ 비고 요약: 1번은 임팩트·난이도 조합이 가장 좋은 퀵윈이다. 2번은 표 안에서 유일하게 "
+                "채널 문제가 아니면서도 실측 이탈률에 근거한다. 3번은 근본 해결이 아니라 우회책이라 효과가 "
+                "제한적일 수 있고, 4번(이메일 채널 개선)과 병행할 수 있다. 5번은 confidence가 중간 수준이라 "
+                "파일럿으로 먼저 효과를 확인하는 것을 권장한다. 6·7번은 임팩트가 가장 크지만 각각 엔지니어링 "
+                "부담과 외부(통신사 간 프로세스) 의존성 때문에 난이도가 높아 우선순위가 뒤로 밀렸다."
+            )
+        if len(prose_parts) > 1:
+            render_md(prose_parts[1])
+        if len(tables6) > 1:
+            render_html_table(parse_markdown_table(tables6[1]), center_cols={"#"})
+        if len(prose_parts) > 2:
+            render_md(prose_parts[2])
+
+        st.divider()
+
+        # ── 7. 한계 / 8. 부록 (접이식) ──
+        with st.expander(f"7. {sections['7'][0]}"):
+            render_md(sections["7"][1])
+
+        with st.expander(f"8. {sections['8'][0]}"):
+            text8 = sections["8"][1]
+            tables8 = re.findall(r"(\|.+\|(?:\n\|.+\|)+)", text8)
+            prose8 = re.sub(r"(\|.+\|(?:\n\|.+\|)+)", "", text8)
+            render_md(prose8)
+            for tbl in tables8:
+                st.dataframe(parse_markdown_table(tbl), width="stretch", hide_index=True)
+
+
+pg = st.navigation(
+    [
+        st.Page(dashboard_page, title="대시보드", icon="📊", default=True),
+        st.Page(report_page, title="개선 제안 리포트", icon="📄"),
+    ]
+)
+pg.run()
