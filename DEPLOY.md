@@ -4,15 +4,16 @@
 
 ## 왜 이런 구조인가
 
-이 대시보드의 "상담원 관점: 직원만족도와 고객 경험" 섹션은 BigQuery를 직접 조회합니다. 그런데:
+이 대시보드의 "상담원 관점: 직원만족도와 고객 경험" 섹션과 "채널 효율" 섹션은 BigQuery를 직접 조회합니다. 그런데:
 
 - Streamlit Community Cloud에는 여러분의 로컬 GCP 로그인 정보(ADC)가 없어서, 별도 인증 수단이 없으면 이 섹션에서 에러가 납니다.
 - BigQuery용 서비스 계정 키를 새로 만들려면 조직 정책(`iam.disableServiceAccountKeyCreation`) 때문에 막히는 경우가 있는데, **계정마다 이 정책을 스스로 풀 수 있는지 여부가 다릅니다.**
+- 결제 계정이 연결되지 않은 **BigQuery 샌드박스 프로젝트는 DML(적재)이 아예 막혀 있습니다.** 그래서 이 앱은 BigQuery에 쓰지 않고 **읽기(SELECT)만** 합니다 — 채널 효율 섹션의 최신 구간(marketing_campaigns)은 BigQuery가 아니라 로컬 CSV(`data/marketing_campaigns.csv`)에서 읽어와 앱 안에서 결합합니다. 자세한 배경은 `Day4_추가교안.md` 참고.
 
 그래서 이 앱은 아래처럼 동작하도록 만들어져 있습니다:
 
 1. 배포 환경에 BigQuery 인증 정보가 있으면 → **라이브 데이터**로 조회
-2. 없으면 → 미리 내려받아 둔 **로컬 스냅샷**(`data/agents_snapshot.csv`, `data/agent_consultations_snapshot.csv`)으로 자동 대체
+2. 없으면 → 미리 내려받아 둔 **로컬 스냅샷**(`data/agents_snapshot.csv`, `data/agent_consultations_snapshot.csv`, `data/marketing_spend_snapshot.csv`)으로 자동 대체
 
 어느 쪽이든 화면 상단에 🟢 라이브 / 🟡 스냅샷 배지로 어떤 데이터를 보고 있는지 항상 표시됩니다. **BigQuery 키를 못 만들어도 배포에는 전혀 문제가 없습니다.**
 
@@ -32,43 +33,17 @@ streamlit run app.py
 - BigQuery 접근 권한이 있고 `gcloud auth application-default login`으로 로그인되어 있다면 → "상담원 관점" 섹션이 🟢 라이브로 뜹니다.
 - 없다면 → 자동으로 🟡 스냅샷으로 뜹니다. **둘 다 정상입니다.**
 
-## 3. (선택) 본인 데이터로 스냅샷 새로 만들기
+## 3. (선택) 스냅샷 새로 만들기 — 배포 전에 한 번 실행
 
-`data/agents_snapshot.csv`는 특정 시점에 미리 뽑아둔 것이라 최신이 아닐 수 있습니다. 본인이 BigQuery에 접근 가능하고 최신 스냅샷으로 갱신하고 싶다면:
+`data/*_snapshot.csv`는 특정 시점에 미리 뽑아둔 것이라 최신이 아닐 수 있습니다. 본인이 BigQuery에 접근 가능하고(로컬에서 `gcloud auth application-default login` 완료) 최신 스냅샷으로 갱신하고 싶다면, **배포 직전에 아래 한 줄만 실행하면 됩니다:**
 
-```python
-from google.cloud import bigquery
-import pandas as pd
-
-PROJECT = "sql-study-493001"   # 본인 프로젝트 ID로 변경
-DATASET = "project1_day1"
-client = bigquery.Client(project=PROJECT)
-
-agent_query = f"""
-WITH agent_csat AS (
-  SELECT c.agent_id, AVG(s.csat) AS avg_csat
-  FROM `{PROJECT}.{DATASET}.consultations` c
-  JOIN `{PROJECT}.{DATASET}.satisfaction` s ON c.consult_id = s.consult_id
-  WHERE c.agent_id IS NOT NULL
-  GROUP BY c.agent_id
-)
-SELECT a.agent_id, a.team, a.overtime_hours_avg, a.agent_satisfaction, ac.avg_csat
-FROM `{PROJECT}.{DATASET}.agents` a
-JOIN agent_csat ac ON a.agent_id = ac.agent_id
-"""
-
-consult_query = f"""
-SELECT c.agent_id, a.team, a.training_completed_yn, c.is_recontact, s.csat
-FROM `{PROJECT}.{DATASET}.consultations` c
-JOIN `{PROJECT}.{DATASET}.satisfaction` s ON c.consult_id = s.consult_id
-JOIN `{PROJECT}.{DATASET}.agents` a ON c.agent_id = a.agent_id
-"""
-
-client.query(agent_query).result().to_dataframe().to_csv("data/agents_snapshot.csv", index=False, encoding="utf-8-sig")
-client.query(consult_query).result().to_dataframe().to_csv("data/agent_consultations_snapshot.csv", index=False, encoding="utf-8-sig")
+```
+python refresh_snapshots.py
 ```
 
-`app.py` 상단의 `SNAPSHOT_DATE` 값도 오늘 날짜로 함께 바꿔주세요. **이 단계는 건너뛰어도 배포에는 지장 없습니다.**
+`agents_snapshot.csv` · `agent_consultations_snapshot.csv` · `marketing_spend_snapshot.csv` 세 파일을 한 번에 갱신합니다. 전부 **BigQuery에서 읽기(SELECT)만** 하고, 아무것도 쓰지 않습니다(샌드박스 프로젝트는 애초에 쓰기가 안 됨).
+
+갱신 후 `common.py` 상단의 `SNAPSHOT_DATE` 값도 오늘 날짜로 함께 바꿔주세요. **이 단계는 건너뛰어도 배포에는 지장 없습니다** — 이미 저장소에 커밋된 스냅샷이 그대로 쓰입니다.
 
 ## 4. GitHub에 올리기
 

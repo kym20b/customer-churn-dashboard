@@ -376,10 +376,47 @@ def report_page():
                 st.dataframe(parse_markdown_table(tbl), width="stretch", hide_index=True)
 
 
+# ──────────────────────────────────────────────────────────────────
+# 채널 효율 페이지
+# ──────────────────────────────────────────────────────────────────
+def channel_efficiency_page():
+    df = c.load_channel_efficiency()
+
+    c.render_hero("채널 효율", "채널별 유입 1건당 비용 — 다음 분기 예산 배분의 근거")
+
+    total_spend = df["spend_recent"].sum()
+    total_signups = df["signups_recent"].sum()
+    avg_cost = total_spend / total_signups
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        c.render_stat_tile("총 집행액", f"{total_spend:,.0f}원")
+    with col2:
+        c.render_stat_tile("총 유입", f"{total_signups:,.0f}건")
+    with col3:
+        c.render_stat_tile("평균 유입단가", f"{avg_cost:,.0f}원")
+
+    st.write("")
+    st.subheader("① 채널별 유입 1건당 비용")
+    st.plotly_chart(c.build_channel_cost_chart(df), width="stretch", config=c.PLOTLY_CONFIG)
+
+    st.subheader("② 최근 3개월 vs 누적 단가 비교")
+    st.plotly_chart(c.build_channel_cost_compare_chart(df), width="stretch", config=c.PLOTLY_CONFIG)
+
+    st.subheader("③ 채널별 연도별 단가 트렌드")
+    monthly_df = c.load_monthly_channel_cost()
+    channel_options = sorted(monthly_df["channel"].unique())
+    selected_channel = st.selectbox("채널 선택", channel_options, key="trend_channel")
+    st.plotly_chart(
+        c.build_channel_trend_chart(monthly_df, selected_channel), width="stretch", config=c.PLOTLY_CONFIG
+    )
+
+
 pg = st.navigation(
     [
         st.Page(dashboard_page, title="대시보드", icon="📊", default=True),
         st.Page(report_page, title="개선 제안 리포트", icon="📄"),
+        st.Page(channel_efficiency_page, title="채널 효율", icon="💰"),
     ]
 )
 pg.run()

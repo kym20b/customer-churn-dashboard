@@ -42,6 +42,11 @@ SNAPSHOT_DATE = "2026-07-24"
 AGENT_SNAPSHOT_PATH = os.path.join(DATA_DIR, "agents_snapshot.csv")
 CONSULT_SNAPSHOT_PATH = os.path.join(DATA_DIR, "agent_consultations_snapshot.csv")
 
+# recent = 최근 3개월(2024-05~07) 완료 캠페인 기준, cumulative = 2019-01~2024-07 누적 marketing_spend 기준
+CHANNEL_EFFICIENCY_SNAPSHOT_PATH = os.path.join(DATA_DIR, "channel_efficiency_snapshot.csv")
+MARKETING_SPEND_SNAPSHOT_PATH = os.path.join(DATA_DIR, "marketing_spend_snapshot.csv")
+MARKETING_CAMPAIGNS_PATH = os.path.join(DATA_DIR, "marketing_campaigns.csv")
+
 FONT_STACK = "Pretendard, 'Malgun Gothic', sans-serif"
 
 CHART_LAYOUT = dict(
@@ -813,4 +818,161 @@ def build_agents_reproducibility_chart():
         yaxis=dict(gridcolor=COLOR_GRID),
         **CHART_LAYOUT,
     )
+    return fig
+
+
+# ── 채널 효율(마케팅 집행) ────────────────────────────────────────
+@st.cache_data
+def load_channel_efficiency():
+    """채널별 유입 1건당 비용 스냅샷을 읽어 recent/cumulative 단가를 계산한다.
+    recent=최근 3개월(2024-05~07) 완료 캠페인 기준, cumulative=2019-01~2024-07 누적 기준."""
+    df = pd.read_csv(CHANNEL_EFFICIENCY_SNAPSHOT_PATH)
+    df["cost_recent"] = df["spend_recent"] / df["signups_recent"]
+    df["cost_cumulative"] = df["spend_cumulative"] / df["signups_cumulative"]
+    return df
+
+
+def build_channel_cost_chart(df):
+    """px.bar(color="channel")는 채널마다 별도 트레이스를 만든다 — 이러면
+    Plotly가 "카테고리당 최대 6개 막대가 나란히 들어갈 그룹 막대"로 폭을
+    계산해서, 실제로는 카테고리당 막대가 1개뿐인데도 막대가 그 1/6
+    너비로 얇게 그려진다. color= 대신 marker_color에 색상 리스트를
+    직접 넘겨 단일 트레이스로 만들면 막대가 카테고리 폭 전체를 쓴다."""
+    highlight_channel = "SNS광고"
+    summary = df.sort_values("cost_recent", ascending=False)
+    colors = [COLOR_CRITICAL if ch == highlight_channel else COLOR_NEUTRAL for ch in summary["channel"]]
+
+    fig = go.Figure(
+        go.Bar(
+            x=summary["channel"],
+            y=summary["cost_recent"],
+            marker_color=colors,
+            text=summary["cost_recent"].map(lambda v: f"{v:,.0f}원"),
+            textposition="outside",
+            customdata=summary[["spend_recent", "signups_recent"]],
+            hovertemplate=(
+                "<b>%{x}</b><br>실집행: %{customdata[0]:,.0f}원<br>"
+                "유입건수: %{customdata[1]:,.0f}건<br>유입 1건당 비용: %{y:,.0f}원<extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        title="채널별 유입 1건당 비용 (최근 3개월, 완료 캠페인 기준)",
+        xaxis=dict(title=""),
+        yaxis=dict(
+            title="유입 1건당 비용 (원)",
+            range=[0, summary["cost_recent"].max() * 1.25],
+            gridcolor=COLOR_GRID,
+        ),
+        bargap=0.15,
+        **CHART_LAYOUT,
+    )
+    return fig
+
+
+def build_channel_cost_compare_chart(df):
+    label_map = {"cost_recent": "최근 3개월", "cost_cumulative": "누적(2019-01~2024-07)"}
+    melted = df.melt(id_vars="channel", value_vars=list(label_map), var_name="구분", value_name="cost")
+    melted["구분"] = melted["구분"].map(label_map)
+    channel_order = list(df.sort_values("cost_recent", ascending=False)["channel"])
+
+    fig = px.bar(
+        melted,
+        x="channel",
+        y="cost",
+        color="구분",
+        barmode="group",
+        color_discrete_map={label_map["cost_recent"]: COLOR_NEUTRAL, label_map["cost_cumulative"]: COLOR_BAR},
+        text=melted["cost"].map(lambda v: f"{v:,.0f}"),
+        title="채널별 유입 1건당 비용 — 최근 3개월 vs 누적",
+        labels={"channel": "", "cost": "유입 1건당 비용 (원)"},
+        category_orders={"channel": channel_order},
+    )
+    fig.update_traces(textposition="outside")
+    fig.update_layout(
+        legend_title_text="",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        yaxis=dict(gridcolor=COLOR_GRID),
+        **CHART_LAYOUT,
+    )
+    return fig
+
+
+@st.cache_data
+def load_monthly_channel_cost():
+    """marketing_spend(월별, ~2024-06)과 marketing_campaigns의 2024-07월분
+    집계를 이어붙여 채널×월 단가(실집행/유입) 시계열을 만든다.
+
+    07월은 완료 여부와 무관하게 전체 합계를 쓴다 — marketing_spend의
+    spend·signups도 원래 완료 여부를 구분하지 않는 값이라, 기준을
+    맞추기 위함이다(Day4_추가교안.md 참고). BigQuery에는 쓰지 않는다."""
+    spend_df = pd.read_csv(MARKETING_SPEND_SNAPSHOT_PATH)[["month", "channel", "spend", "signups"]]
+
+    campaigns_df = pd.read_csv(MARKETING_CAMPAIGNS_PATH)
+    july = campaigns_df[campaigns_df["월"] == "2024-07"]
+    july_agg = (
+        july.groupby("채널", as_index=False)
+        .agg(spend=("실집행", "sum"), signups=("유입건수", "sum"))
+        .rename(columns={"채널": "channel"})
+    )
+    july_agg["month"] = "2024-07"
+    july_agg = july_agg[["month", "channel", "spend", "signups"]]
+
+    combined = pd.concat([spend_df, july_agg], ignore_index=True)
+    combined["cost"] = combined.apply(
+        lambda r: r["spend"] / r["signups"] if r["signups"] > 0 else None, axis=1
+    )
+    return combined.sort_values(["channel", "month"]).reset_index(drop=True)
+
+
+def build_channel_trend_chart(df, channel):
+    """선택한 채널 하나의 연도별 단가 추이(2019~2024).
+
+    월별로 보면 표본이 너무 작아(채널당 월 0~수 건) 등락이 심해 추세를
+    읽기 어려웠다. 연 단위로 묶어 spend·signups를 각각 합산한 뒤
+    단가를 다시 계산한다 — 연도별 단가의 평균이 아니라, 그 해 전체
+    지출·유입 합계로 계산한 값이라는 점이 다르다(월별 단가의 평균과는
+    미묘하게 다를 수 있음)."""
+    sub = df[df["channel"] == channel].copy()
+    sub["year"] = sub["month"].str[:4]
+
+    yearly = sub.groupby("year", as_index=False).agg(spend=("spend", "sum"), signups=("signups", "sum"))
+    yearly["cost"] = yearly.apply(lambda r: r["spend"] / r["signups"] if r["signups"] > 0 else None, axis=1)
+
+    is_2024_partial = "2024" in yearly["year"].values
+    yearly["연도"] = yearly["year"] + yearly["year"].apply(lambda y: " (~07월)" if y == "2024" else "")
+
+    fig = px.line(
+        yearly,
+        x="연도",
+        y="cost",
+        markers=True,
+        custom_data=["spend", "signups"],
+        title=f"{channel} — 연도별 유입 1건당 비용 추이 (2019~2024)",
+        labels={"연도": "", "cost": "유입 1건당 비용 (원)"},
+    )
+    fig.update_traces(
+        line=dict(color=COLOR_LINE, width=2),
+        marker=dict(size=8, color=COLOR_LINE),
+        connectgaps=False,
+        hovertemplate=(
+            "%{x}<br>연간 실집행: %{customdata[0]:,.0f}원<br>연간 유입: %{customdata[1]:,.0f}건"
+            "<br>유입 1건당 비용: %{y:,.0f}원<extra></extra>"
+        ),
+    )
+    fig.update_layout(
+        # "2019".."2023"이 숫자로 보여서 x축이 자동으로 연속형 숫자 축이
+        # 되어버리면, 문자열인 "2024 (~07월)"이 빠지고 중간에 "2,019.5"
+        # 같은 눈금이 생긴다. 범주형으로 고정해서 순서·전체 연도를 보장한다.
+        xaxis=dict(type="category", categoryorder="array", categoryarray=list(yearly["연도"]), gridcolor=COLOR_GRID),
+        yaxis=dict(gridcolor=COLOR_GRID),
+        **CHART_LAYOUT,
+    )
+    if is_2024_partial:
+        fig.add_annotation(
+            text="※ 2024년은 7월까지 7개월치만 반영된 값입니다 — 다른 해(12개월)와 절대 비교 시 주의하세요.",
+            xref="paper", yref="paper", x=0, y=-0.28,
+            showarrow=False, align="left", font=dict(size=12, color="#52514e"),
+        )
+        fig.update_layout(margin=dict(b=80))
     return fig
